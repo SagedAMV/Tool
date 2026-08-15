@@ -8,10 +8,10 @@
  *   node scripts/visual-report.js index.html --output report.html
  *   node scripts/visual-report.js --open     (يفتح التقرير في المتصفح)
  */
-import { readFileSync, existsSync, writeFileSync } from 'fs';
-import { resolve, relative } from 'path';
-import { HTMLHint } from 'htmlhint';
-import { execSync } from 'child_process';
+const { readFileSync, existsSync, writeFileSync } = require('fs');
+const { resolve, relative } = require('path');
+const { HTMLHint } = require('htmlhint');
+const { execSync } = require('child_process');
 
 const args = process.argv.slice(2);
 const fileArg = args.find(a => !a.startsWith('--'));

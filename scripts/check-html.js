@@ -8,9 +8,9 @@
  *   node scripts/check-html.js www/**\/*.html
  *   node scripts/check-html.js --json index.html   (تقرير JSON)
  */
-import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
-import { join, resolve } from 'path';
-import { HTMLHint } from 'htmlhint';
+const { readFileSync, existsSync, readdirSync, statSync } = require('fs');
+const { join, resolve } = require('path');
+const { HTMLHint } = require('htmlhint');
 
 // ===== ألوان الطرفية =====
 const C = {

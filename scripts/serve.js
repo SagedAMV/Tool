@@ -8,10 +8,10 @@
  *   node scripts/serve.js ../my-app/   (يخدم مجلد محدد)
  *   node scripts/serve.js --port 3000  (منفذ مخصص)
  */
-import { createServer } from 'http';
-import { readFileSync, existsSync, statSync, readdirSync } from 'fs';
-import { resolve, extname, join, relative } from 'path';
-import { URL } from 'url';
+const { createServer } = require('http');
+const { readFileSync, existsSync, statSync, readdirSync } = require('fs');
+const { resolve, extname, join, relative } = require('path');
+const { URL } = require('url');
 
 const CWD = process.cwd();
 const args = process.argv.slice(2);
