@@ -1,0 +1,17 @@
+{
+  "name": "html-toolkit",
+  "version": "1.0.0",
+  "description": "HTML analysis & preview toolkit - فحص ومعاينة ملفات HTML",
+  "type": "module",
+  "scripts": {
+    "check": "node scripts/check-html.js",
+    "serve": "node scripts/serve.js",
+    "report": "node scripts/visual-report.js"
+  },
+  "dependencies": {
+    "htmlhint": "^1.9.2"
+  },
+  "devDependencies": {
+    "serve": "^14.2.0"
+  }
+}
