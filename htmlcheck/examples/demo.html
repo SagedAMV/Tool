@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<meta charset="utf-8">
+<title>صفحة تجريبية للفحص</title>
+<style>
+  body{font-family:system-ui,Tahoma,sans-serif;background:#0f172a;color:#e2e8f0;padding:20px}
+  .wide{width:1800px;height:40px;background:#334155;margin:10px 0}
+  .tiny{font-size:9px;color:#64748b}
+  .low{color:#334155;background:#1e293b;padding:8px}
+  button{padding:10px 16px;border-radius:8px;border:0;background:#38bdf8;color:#0f172a;font-weight:700;margin:6px;cursor:pointer}
+  .mini{padding:2px 4px;font-size:10px}
+  #out{margin-top:14px;padding:10px;background:#1e293b;border-radius:8px;min-height:30px}
+</style>
+<h1>صفحة تجريبية</h1>
+<button id="ok" onclick="document.getElementById('out').textContent='تم الضغط ✔ ' + new Date().toLocaleTimeString()">زر يعمل</button>
+<button id="dead">زر بلا وظيفة</button>
+<button id="boom" onclick="notDefinedFn()">زر يسبب خطأ JS</button>
+<button class="mini" onclick="document.getElementById('out').innerHTML+='<br>صغير'">زر صغير</button>
+<button disabled>زر معطّل</button>
+<a href="#section">رابط داخلي</a>
+<div id="out">النتيجة هنا</div>
+<div class="wide">عنصر عريض يسبب تجاوزاً أفقياً</div>
+<p class="tiny">هذا نص صغير جداً لا يُقرأ</p>
+<p class="low">هذا نص بتباين ألوان ضعيف</p>
+<img src="missing-image.png" width="120" height="80">
+<h2 id="section">قسم</h2>
+</html>
