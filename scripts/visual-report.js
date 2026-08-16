@@ -9,13 +9,16 @@
  *   node scripts/visual-report.js --open     (يفتح التقرير في المتصفح)
  */
 const { readFileSync, existsSync, writeFileSync } = require('fs');
-const { resolve, relative } = require('path');
+const { resolve, relative, dirname, basename } = require('path');
 const { HTMLHint } = require('htmlhint');
 const { execSync } = require('child_process');
 
 const args = process.argv.slice(2);
 const fileArg = args.find(a => !a.startsWith('--'));
-const outputFlag = args[args.indexOf('--output') + 1];
+// ⚠️ إصلاح: عند غياب --output كان indexOf يُعيد -1 فيصبح args[0]
+// أي اسم الملف المصدر نفسه — وهو السبب الجذري لإتلاف الملف.
+const outIdx = args.indexOf('--output');
+const outputFlag = outIdx !== -1 ? args[outIdx + 1] : undefined;
 const shouldOpen = args.includes('--open');
 
 if (!fileArg) {
@@ -52,7 +55,19 @@ const score = hints.length === 0 ? 100 : Math.max(0, Math.round((1 - errors / hi
 const grade = score >= 90 ? 'ممتاز' : score >= 70 ? 'جيد' : 'يحتاج تحسين';
 const gradeColor = score >= 90 ? '#00b894' : score >= 70 ? '#fdcb6e' : '#ff7675';
 
-const outputPath = outputFlag ? resolve(outputFlag) : resolve('report-' + fileName.replace('.html', '.html'));
+// ⚠️ إصلاح خطأ خطير: كان `fileName.replace('.html','.html')` لا يغيّر شيئاً،
+// وكان resolve() بلا مجلد يكتب التقرير فوق الملف المصدر ويُتلفه.
+const baseName = basename(fileName).replace(/\.x?html?$/i, '');
+const outputPath = outputFlag
+  ? resolve(outputFlag)
+  : resolve(dirname(filePath), `report-${baseName}.html`);
+
+// حماية مزدوجة: لا نكتب أبداً فوق الملف الذي نفحصه
+if (resolve(outputPath) === resolve(filePath)) {
+  console.error('❌ رفض الكتابة: مسار التقرير يطابق الملف المصدر — هذا كان سيُتلف ملفك.');
+  console.error('   استخدم --output لتحديد مسار مختلف.');
+  process.exit(1);
+}
 const relPath = relative(process.cwd(), filePath);
 
 const html = `<!DOCTYPE html>
@@ -132,7 +147,8 @@ console.log(`📊 التقييم: ${score}% - ${grade}`);
 
 if (shouldOpen) {
   try {
-    execSync(`open "${outputPath}"`); // macOS
-    execSync(`xdg-open "${outputPath}"`); // Linux
+    const opener = process.platform === 'darwin' ? 'open'
+                 : process.platform === 'win32' ? 'start ""' : 'xdg-open';
+    execSync(`${opener} "${outputPath}"`);
   } catch {}
 }
