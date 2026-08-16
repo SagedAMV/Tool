@@ -142,12 +142,68 @@ async def snapshot_state(page):
     })""")
 
 
-async def run_clicks(page, rec, shots_dir, limit=40, timeout_ms=1500):
-    """يضغط كل عنصر قابل للنقر ويسجل التغيير الحاصل."""
+async def close_overlays(page):
+    """يحاول إغلاق أي نافذة منبثقة مفتوحة."""
+    try:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(150)
+        closed = await page.evaluate("""() => {
+            let n = 0;
+            const cands = document.querySelectorAll(
+              '.modal .close, .modal-close, [data-close], .close-btn, .btn-close, [aria-label*=إغلاق], [aria-label*=close i], .overlay .close');
+            for (const c of cands) { const r=c.getBoundingClientRect();
+              if (r.width && r.height) { c.click(); n++; } }
+            return n;
+        }""")
+        await page.wait_for_timeout(200)
+        return closed
+    except Exception:
+        return 0
+
+
+async def is_covered(page, el):
+    """هل العنصر محجوب بعنصر آخر فوقه؟"""
+    try:
+        return await el.evaluate(r"""e => {
+            const r = e.getBoundingClientRect();
+            const x = r.left + r.width/2, y = r.top + r.height/2;
+            if (x<0||y<0||x>innerWidth||y>innerHeight) return 'خارج الشاشة';
+            const top = document.elementFromPoint(x,y);
+            if (!top) return 'لا عنصر';
+            if (top === e || e.contains(top) || top.contains(e)) return null;
+            const cs = getComputedStyle(top);
+            const id = top.id ? '#'+top.id : top.tagName.toLowerCase() +
+                       (top.className && typeof top.className==='string' ? '.'+top.className.trim().split(/\s+/)[0] : '');
+            return 'محجوب بـ ' + id + (cs.position==='fixed'?' (fixed)':'');
+        }""")
+    except Exception:
+        return None
+
+
+async def run_clicks(page, rec, shots_dir, url, limit=40, timeout_ms=1500, isolate=True):
+    """يضغط كل عنصر قابل للنقر ويسجل التغيير الحاصل.
+    isolate=True: يعيد تحميل الصفحة قبل كل ضغطة حتى لا تتراكم النوافذ المنبثقة."""
     results = []
     handles = await page.query_selector_all(CLICKABLE_SEL)
     total = len(handles)
-    for idx in range(min(total, limit)):
+    # نحدد فقط العناصر المرئية فعلاً في الحالة الابتدائية (الباقي مخفي داخل نوافذ/تبويبات)
+    visible_idx = []
+    for i, hnd in enumerate(handles):
+        try:
+            if await hnd.is_visible():
+                visible_idx.append(i)
+        except Exception:
+            pass
+    hidden = total - len(visible_idx)
+    for idx in visible_idx[:limit]:
+        if isolate:
+            try:
+                await page.goto(url, wait_until="load", timeout=20000)
+                await page.wait_for_timeout(500)
+            except Exception:
+                pass
+        else:
+            await close_overlays(page)
         handles = await page.query_selector_all(CLICKABLE_SEL)
         if idx >= len(handles):
             break
@@ -155,8 +211,8 @@ async def run_clicks(page, rec, shots_dir, limit=40, timeout_ms=1500):
         try:
             if not await el.is_visible():
                 continue
-            info = await el.evaluate("""e => ({tag:e.tagName.toLowerCase(),
-                 text:(e.innerText||e.value||e.getAttribute('aria-label')||'').trim().slice(0,60),
+            info = await el.evaluate(r"""e => ({tag:e.tagName.toLowerCase(),
+                 text:(e.innerText||e.value||e.getAttribute('aria-label')||'').replace(/\s+/g,' ').trim().slice(0,60),
                  href:e.getAttribute('href')||'', disabled: !!e.disabled})""")
         except Exception:
             continue
@@ -170,11 +226,20 @@ async def run_clicks(page, rec, shots_dir, limit=40, timeout_ms=1500):
 
         before = await snapshot_state(page)
         err_before, con_before = len(rec.errors), len(rec.console)
-        shot = None
         try:
-            await el.scroll_into_view_if_needed(timeout=1000)
-            await el.click(timeout=timeout_ms, force=False)
-            await page.wait_for_timeout(400)
+            await el.scroll_into_view_if_needed(timeout=1500)
+            await page.wait_for_timeout(150)
+        except Exception:
+            pass
+        cover = await is_covered(page, el)
+        forced = False
+        try:
+            try:
+                await el.click(timeout=timeout_ms)
+            except Exception:
+                await el.click(timeout=timeout_ms, force=True)
+                forced = True
+            await page.wait_for_timeout(500)
             after = await snapshot_state(page)
             changed = []
             if after["url"] != before["url"]:
@@ -183,25 +248,40 @@ async def run_clicks(page, rec, shots_dir, limit=40, timeout_ms=1500):
                 changed.append(f"تغيّر محتوى DOM ({before['html_len']} → {after['html_len']})")
             if after["text"] != before["text"]:
                 changed.append("تغيّر النص الظاهر")
+            modal = await page.evaluate("""() => {
+                const m = Array.from(document.querySelectorAll('*')).filter(e=>{
+                  const cs=getComputedStyle(e); const r=e.getBoundingClientRect();
+                  return (cs.position==='fixed'||cs.position==='absolute') && cs.display!=='none'
+                     && cs.visibility!=='hidden' && +cs.opacity>0.1 && r.width>innerWidth*0.4 && r.height>innerHeight*0.25;
+                });
+                return m.length ? (m[m.length-1].id||m[m.length-1].className||'عنصر').toString().slice(0,40) : null;
+            }""")
+            if modal:
+                changed.append(f"فُتحت نافذة/طبقة: {modal}")
             new_err = rec.errors[err_before:]
             status = "؛ ".join(changed) if changed else "لا تغيير ملحوظ (قد يكون الزر بلا وظيفة)"
+            if forced:
+                status = "⚠️ احتاج ضغطاً قسرياً (" + (cover or "محجوب") + ") | " + status
+            elif cover:
+                status = "⚠️ " + cover + " | " + status
             if new_err:
                 status += " | ❌ خطأ JS: " + new_err[0]["text"][:120]
             name = f"click_{idx:02d}.png"
             await page.screenshot(path=str(shots_dir / name))
-            shot = name
-            results.append({**info, "index": idx, "result": status, "shot": shot,
+            results.append({**info, "index": idx, "result": status, "shot": name,
                             "js_errors": [e["text"] for e in new_err],
                             "new_console": [c for c in rec.console[con_before:] if c["type"] in ("error", "warning")]})
-            if after["url"] != before["url"]:
+            if after["url"] != before["url"] and not isolate:
                 await page.go_back(wait_until="load")
                 await page.wait_for_timeout(300)
         except Exception as ex:
-            results.append({**info, "index": idx, "result": f"فشل الضغط: {str(ex)[:120]}"})
-    return results, total
+            results.append({**info, "index": idx,
+                            "result": f"فشل الضغط: {str(ex).splitlines()[0][:100]}"
+                                      + (f" | {cover}" if cover else "")})
+    return results, total, hidden
 
 
-async def audit(target, outdir, viewports, do_clicks=True, click_limit=40, wait=1200):
+async def audit(target, outdir, viewports, do_clicks=True, click_limit=40, wait=1200, isolate=True):
     outdir = Path(outdir)
     shots = outdir / "shots"
     shots.mkdir(parents=True, exist_ok=True)
@@ -240,7 +320,8 @@ async def audit(target, outdir, viewports, do_clicks=True, click_limit=40, wait=
             report["viewports"].append(vp)
 
             if do_clicks and name == "desktop":
-                clicks, total = await run_clicks(page, rec, shots, limit=click_limit)
+                clicks, total, hidden = await run_clicks(page, rec, shots, url, limit=click_limit, isolate=isolate)
+                report["hidden_clickables"] = hidden
                 report["clicks"] = clicks
                 report["clickable_total"] = total
 
@@ -282,7 +363,9 @@ details summary{cursor:pointer;color:#7dd3fc;margin:6px 0}"""
     h.append(f"<span class=pill>{'❌' if errs else '✅'} أخطاء JS: {len(errs)}</span>")
     h.append(f"<span class=pill>أخطاء كونسول: {len(warns)}</span>")
     h.append(f"<span class=pill>{'⚠️' if net else '✅'} طلبات فاشلة: {len(net)}</span>")
-    h.append(f"<span class=pill>عناصر ضُغطت: {len(r.get('clicks', []))} / {r.get('clickable_total', 0)}</span></div>")
+    h.append(f"<span class=pill>عناصر ضُغطت: {len(r.get('clicks', []))} مرئية</span>"
+             f"<span class=pill>إجمالي العناصر القابلة للنقر: {r.get('clickable_total', 0)}</span>"
+             f"<span class=pill>مخفية وقت الفحص (داخل نوافذ/تبويبات): {r.get('hidden_clickables', 0)}</span></div>")
 
     for v in r["viewports"]:
         a = v["audit"]
@@ -350,6 +433,7 @@ def main():
     ap.add_argument("--limit", type=int, default=40, help="أقصى عدد أزرار تُضغط")
     ap.add_argument("--wait", type=int, default=1200, help="انتظار بعد التحميل (ms)")
     ap.add_argument("--viewport", action="append", help="مقاس مخصص مثل 1440x900")
+    ap.add_argument("--no-isolate", action="store_true", help="لا تعِد تحميل الصفحة قبل كل ضغطة (أسرع، لكن النوافذ المنبثقة قد تتراكم)")
     args = ap.parse_args()
 
     vps = DEFAULT_VIEWPORTS
@@ -359,7 +443,7 @@ def main():
             w, hh = v.lower().split("x")
             vps.append((f"vp{i}_{w}x{hh}", int(w), int(hh), int(w) < 700))
 
-    r = asyncio.run(audit(args.target, args.out, vps, not args.no_click, args.limit, args.wait))
+    r = asyncio.run(audit(args.target, args.out, vps, not args.no_click, args.limit, args.wait, not args.no_isolate))
     print(f"\n✅ تم. التقرير: {Path(args.out) / 'report.html'}")
     print(f"   أخطاء JS: {len(r['errors'])} | أزرار مُختبرة: {len(r.get('clicks', []))}")
 
