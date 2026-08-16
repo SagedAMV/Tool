@@ -58,8 +58,39 @@ AUDIT_JS = r"""
   const parseRGB = c => { const m=(c||'').match(/[\d.]+/g); return m? m.slice(0,3).map(Number):null; };
   const lum = rgb => { const a=rgb.map(v=>{v/=255; return v<=0.03928? v/12.92 : Math.pow((v+0.055)/1.055,2.4);});
                        return 0.2126*a[0]+0.7152*a[1]+0.0722*a[2]; };
-  const bgOf = el => { let n=el; while(n && n!==document.documentElement){ const c=getComputedStyle(n).backgroundColor;
-      const p=parseRGB(c); if(p && !/rgba\(.*,\s*0\)/.test(c)) return p; n=n.parentElement;} return [255,255,255]; };
+  // يقرأ الخلفية الفعلية: لون صريح، أو متوسط ألوان التدرّج (gradient)
+  const gradAvg = bi => {
+    if (!bi || bi === 'none' || !/gradient/i.test(bi)) return null;
+    const cols = bi.match(/rgba?\([^)]+\)/g) || [];
+    const rgbs = cols.map(parseRGB).filter(p => p && !/rgba\([^)]*,\s*0\s*\)/.test(''));
+    if (!rgbs.length) return null;
+    return [0,1,2].map(i => Math.round(rgbs.reduce((a,c)=>a+c[i],0)/rgbs.length));
+  };
+  // تركيب الطبقات الشفافة فوق بعضها (alpha compositing) للحصول على الخلفية الحقيقية
+  const bgOf = el => {
+    const layers = [];
+    let n = el;
+    while (n && n !== document.documentElement) {
+      const cs = getComputedStyle(n);
+      const g = gradAvg(cs.backgroundImage);
+      if (g) { layers.push([g, 1]); break; }
+      const c = cs.backgroundColor, p = parseRGB(c);
+      let a = 1;
+      const m = c.match(/rgba\(([^)]+)\)/);
+      if (m) { const parts = m[1].split(','); a = parts[3] !== undefined ? parseFloat(parts[3]) : 1; }
+      if (p && a > 0.001) { layers.push([p, a]); if (a >= 0.999) break; }
+      n = n.parentElement;
+    }
+    let base = [255, 255, 255];
+    const rootBg = parseRGB(getComputedStyle(document.documentElement).backgroundColor);
+    if (rootBg) base = rootBg;
+    // نركّب من الأسفل (الأبعد) إلى الأعلى
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const [col, a] = layers[i];
+      base = [0,1,2].map(k => col[k] * a + base[k] * (1 - a));
+    }
+    return base.map(Math.round);
+  };
 
   const all = Array.from(document.querySelectorAll('*'));
   out.counts.elements = all.length;
@@ -80,27 +111,51 @@ AUDIT_JS = r"""
     if (txt && fs && fs < 11) out.tiny_text.push({sel:sel(el), size:fs, text:txt.slice(0,40)});
     // تباين
     if (txt && txt.length > 2) {
-      const fg = parseRGB(cs.color), bg = bgOf(el);
+      let fg = parseRGB(cs.color); const bg = bgOf(el);
+      // شفافية متراكمة على النص تُخفّف اللون فعلياً فوق الخلفية
+      let op = 1, an = el;
+      while (an && an !== document.documentElement) { op *= parseFloat(getComputedStyle(an).opacity || 1); an = an.parentElement; }
+      const ca = (cs.color.match(/rgba\([^)]*,\s*([\d.]+)\s*\)/)||[])[1];
+      const eff = op * (ca !== undefined ? parseFloat(ca) : 1);
+      if (fg && eff < 1) fg = fg.map((v,i)=> v*eff + bg[i]*(1-eff));
       if (fg) { const l1=lum(fg), l2=lum(bg);
         const ratio = (Math.max(l1,l2)+0.05)/(Math.min(l1,l2)+0.05);
         const big = fs>=24 || (fs>=18.66 && parseInt(cs.fontWeight)>=700);
-        if (ratio < (big?3:4.5)) out.contrast.push({sel:sel(el), ratio:+ratio.toFixed(2),
-            need: big?3:4.5, color:cs.color, bg:'rgb('+bg.join(',')+')', text:txt.slice(0,40)});
+        if (ratio < (big?3:4.5)) out.contrast.push({sel:sel(el), ratio:+ratio.toFixed(2), need: big?3:4.5,
+            color:cs.color, opacity:+eff.toFixed(2), bg:'rgb('+bg.join(',')+')', size:fs, text:txt.slice(0,40)});
       }
     }
     // أهداف لمس صغيرة
     const tag = el.tagName.toLowerCase();
     const clickable = tag==='button'||tag==='a'||(tag==='input'&&['button','submit','checkbox','radio'].includes(el.type))||el.getAttribute('role')==='button'||cs.cursor==='pointer';
-    if (clickable && (r.width < 44 || r.height < 44))
+    // نتجاهل الأبناء داخل هدف لمس كبير بالفعل (إيجابية كاذبة)
+    let insideBigTarget = false;
+    if (clickable) {
+      let anc = el.parentElement;
+      while (anc && anc !== document.body) {
+        const acs = getComputedStyle(anc);
+        const atag = anc.tagName.toLowerCase();
+        const aClick = atag==='button'||atag==='a'||anc.getAttribute('role')==='button'||anc.hasAttribute('onclick')||acs.cursor==='pointer';
+        if (aClick) { const ar = anc.getBoundingClientRect();
+          if (ar.width >= 44 && ar.height >= 44) { insideBigTarget = true; } break; }
+        anc = anc.parentElement;
+      }
+    }
+    if (clickable && !insideBigTarget && (r.width < 44 || r.height < 44))
       out.small_tap.push({sel:sel(el), w:Math.round(r.width), h:Math.round(r.height)});
     if (tag==='img' && !el.getAttribute('alt')) out.no_alt.push({sel:sel(el), src:(el.currentSrc||el.src||'').slice(-60)});
-    if (clickable) boxes.push({sel:sel(el), r:{x:r.x,y:r.y,w:r.width,h:r.height}});
+    if (clickable && !insideBigTarget) boxes.push({el:el, sel:sel(el), r:{x:r.x,y:r.y,w:r.width,h:r.height}});
   }
   // تداخل بين العناصر القابلة للنقر
   for (let i=0;i<boxes.length;i++) for (let j=i+1;j<boxes.length;j++){
     const a=boxes[i].r,b=boxes[j].r;
     const ox=Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x);
     const oy=Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y);
+    const ea=boxes[i].el, eb=boxes[j].el;
+    if (ea.contains(eb) || eb.contains(ea)) continue;   // أب/ابن: تداخل طبيعي
+    // تداخل مع عنصر ثابت (شريط سفلي) قابل للتمرير = مؤقت وليس عيباً
+    const fixedPair = [ea,eb].some(x=>{ let n=x; while(n&&n!==document.body){ if(getComputedStyle(n).position==='fixed') return true; n=n.parentElement;} return false;});
+    if (fixedPair && document.documentElement.scrollHeight > innerHeight + 20) continue;
     if (ox>4 && oy>4) { out.overlap.push({a:boxes[i].sel,b:boxes[j].sel,area:Math.round(ox*oy)}); }
     if (out.overlap.length>30) break;
   }
