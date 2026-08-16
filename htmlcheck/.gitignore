@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+htmlcheck_report/
+demo_report/
